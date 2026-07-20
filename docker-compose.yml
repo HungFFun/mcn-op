@@ -10,6 +10,10 @@ services:
       # Secrets: the app's own loader parses .env (handles inline comments/quotes),
       # so mount it rather than using compose env_file. Read-only.
       - ./.env:/app/.env:ro
+      # Telegram bot tokens live in ~/.claude/secrets/*.env on the host (recap +
+      # payout bots), which the loader reads at ~/.claude/secrets — i.e. /root
+      # inside the container. Mount them so the tokens resolve. Read-only.
+      - ${HOME}/.claude/secrets:/root/.claude/secrets:ro
       # Persist logs, schedule.json, dedup state, carryover surplus, PDFs.
       - ./run:/app/run
     # "Run the project" = control bot + background scheduler.
