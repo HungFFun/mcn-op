@@ -30,7 +30,6 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("requests is not installed. Run: pip3 install -r requirements.txt") from exc
 
 _API = "https://api.telegram.org/bot{token}/{method}"
-_MAXLEN = 3500
 
 SCHEDULABLE = scheduler.SCHEDULABLE          # payout, mcn-report, daily-recap, leave-watch
 RUNNABLE = list(scheduler.TASKS)             # + check
@@ -145,19 +144,19 @@ def _fmt_status() -> str:
 # --- task execution ----------------------------------------------------------
 
 def _run_and_report(chat_id, task: str, no_send: bool) -> None:
+    """Run the task and report only a one-line outcome — no detail dump. The
+    task posts its own report to the target group; the control chat just needs
+    to know it finished."""
     send(chat_id, f"▶️ Đang chạy <b>{esc(_label(task))}</b>{' (chạy thử)' if no_send else ''}…")
     try:
         rc = scheduler.run_task(task, block=True, no_send=no_send)
     except Exception as exc:  # noqa: BLE001
         send(chat_id, f"❌ <b>{esc(_label(task))}</b> lỗi: {esc(f'{type(exc).__name__}: {exc}')}")
         return
-    status = "✅ Xong" if rc == 0 else f"❌ Lỗi (rc={rc})"
-    tail = scheduler.tail(task, 30)
-    body = f"\n<pre>{esc(tail)}</pre>" if tail else ""
-    msg = f"{status} — <b>{esc(_label(task))}</b>{body}"
-    if len(msg) > _MAXLEN:
-        msg = f"{status} — <b>{esc(_label(task))}</b>"
-    send(chat_id, msg)
+    if rc == 0:
+        send(chat_id, f"✅ <b>{esc(_label(task))}</b> đã chạy xong.")
+    else:
+        send(chat_id, f"❌ <b>{esc(_label(task))}</b> lỗi (rc={rc}).")
 
 
 # --- update handling ---------------------------------------------------------
@@ -225,12 +224,6 @@ def on_callback(cq: dict) -> None:
         return
     answer(cq_id)
 
-    # execute a run: rgo:<task>:<0|1>
-    if data.startswith("rgo:"):
-        _, task, dry = data.split(":")
-        edit(chat_id, mid, f"▶️ Đã đưa <b>{esc(_label(task))}</b> vào hàng đợi…")
-        threading.Thread(target=_run_and_report, args=(chat_id, task, dry == "1"), daemon=True).start()
-        return
     # apply preset time: setv:<task>:<val>
     if data.startswith("setv:"):
         _, task, val = data.split(":", 2)
@@ -252,12 +245,10 @@ def on_callback(cq: dict) -> None:
     if ":" in data:
         prefix, task = data.split(":", 1)
         if prefix == "runp":
-            kb = _kb([[("▶️ Chạy thật", f"rcfm:{task}"), ("🧪 Chạy thử", f"rgo:{task}:1")],
-                      [("⬅️ Quay lại", "run")]])
-            edit(chat_id, mid, f"Chạy <b>{esc(_label(task))}</b>?", kb)
-        elif prefix == "rcfm":
-            kb = _kb([[("✅ Xác nhận chạy", f"rgo:{task}:0"), ("⬅️ Quay lại", "run")]])
-            edit(chat_id, mid, f"⚠️ <b>{esc(_label(task))}</b> sẽ chạy thật và có thể gửi lên Telegram. Xác nhận?", kb)
+            # Pick a task → run it immediately. No task moves money directly
+            # (they only post a report/PDF), so there is no confirm step.
+            edit(chat_id, mid, f"▶️ Đã đưa <b>{esc(_label(task))}</b> vào hàng đợi…")
+            threading.Thread(target=_run_and_report, args=(chat_id, task, False), daemon=True).start()
         elif prefix == "setp":
             rows = [[(p, f"setv:{task}:{p}")] for p in _presets(task)]
             rows.append([("🚫 Tắt", f"setv:{task}:off"), ("✏️ Tùy chỉnh", f"setc:{task}")])
