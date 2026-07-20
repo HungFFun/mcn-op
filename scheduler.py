@@ -173,7 +173,12 @@ def _beat() -> None:
         pass
 
 
-def serve() -> None:
+def serve(runner=None) -> None:
+    """Fire due tasks forever. ``runner(key)`` handles each due task and must
+    return quickly (spawn its own thread if it blocks); it defaults to
+    ``run_task`` (detached subprocess). The bot passes a runner that also pings
+    the control chat when the task finishes."""
+    fire = runner or run_task
     print(f"Scheduler up (ICT). Logs → {LOG_DIR} · schedule → {SCHEDULE_FILE}")
     _print_schedule(load_schedule())
     fired: set[tuple] = set()
@@ -186,7 +191,7 @@ def serve() -> None:
             if tag not in fired:
                 fired.add(tag)
                 try:
-                    run_task(key)
+                    fire(key)
                 except Exception as exc:  # noqa: BLE001 — never let one task kill the loop
                     print(f"[{n:%H:%M}] ERROR launching {key}: {type(exc).__name__}: {exc}")
         # drop tags from earlier days so the set stays small

@@ -159,6 +159,24 @@ def _run_and_report(chat_id, task: str, no_send: bool) -> None:
         send(chat_id, f"❌ <b>{esc(_label(task))}</b> lỗi (rc={rc}).")
 
 
+def _scheduled_run(key: str) -> None:
+    """Run a task fired by the scheduler and ping the control chat(s) with the
+    outcome (one line, ⏰ = automatic). Runs blocking in its own thread."""
+    try:
+        rc = scheduler.run_task(key, block=True, no_send=False)
+        text = (f"⏰ ✅ <b>{esc(_label(key))}</b> đã chạy xong (tự động)."
+                if rc == 0 else f"⏰ ❌ <b>{esc(_label(key))}</b> lỗi (rc={rc}).")
+    except Exception as exc:  # noqa: BLE001
+        text = f"⏰ ❌ <b>{esc(_label(key))}</b> lỗi: {esc(f'{type(exc).__name__}: {exc}')}"
+    for chat_id in env.CONTROL_ALLOWED:
+        send(chat_id, text)
+
+
+def _on_schedule_fire(key: str) -> None:
+    """Scheduler-loop hook: kick off the run in a thread so the loop never blocks."""
+    threading.Thread(target=_scheduled_run, args=(key,), daemon=True).start()
+
+
 # --- update handling ---------------------------------------------------------
 
 # Reply-keyboard labels → the top-level view to open (inline drill-down follows).
@@ -300,7 +318,8 @@ def main() -> None:
     print(f"Control bot @{who} up. Allowed chats: {allow}")
 
     if args.scheduler:
-        threading.Thread(target=scheduler.serve, daemon=True).start()
+        threading.Thread(target=scheduler.serve, kwargs={"runner": _on_schedule_fire},
+                         daemon=True).start()
         print("Scheduler thread started.")
 
     poll()
