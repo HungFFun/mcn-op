@@ -85,6 +85,21 @@ def _menu_kb() -> str:
     ])
 
 
+# Persistent reply keyboard: sits above the input box, always visible, one tap
+# sends the button label as a message. Installed once on /start; on_message maps
+# each label back to the matching top-level view (drill-down stays inline).
+def _reply_kb() -> str:
+    return json.dumps({
+        "keyboard": [
+            [{"text": "📊 Status"}, {"text": "🗓 Schedule"}],
+            [{"text": "▶️ Run"}, {"text": "📄 Logs"}],
+            [{"text": "⏰ Set time"}],
+        ],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }, ensure_ascii=False)
+
+
 def _task_picker(prefix: str, tasks: list[str], back: str = "menu") -> str:
     rows = [[(t, f"{prefix}:{t}")] for t in tasks]
     rows.append([("⬅️ Menu", back)])
@@ -167,13 +182,23 @@ def _send_log(chat_id, task: str, lines: int = 40) -> None:
 
 # --- update handling ---------------------------------------------------------
 
+# Reply-keyboard labels → the top-level view to open (inline drill-down follows).
+_REPLY_ACTIONS = {
+    "📊 Status": lambda cid: send(cid, _fmt_status(), _back_menu_kb()),
+    "🗓 Schedule": lambda cid: send(cid, _fmt_schedule(), _back_menu_kb()),
+    "▶️ Run": lambda cid: send(cid, "▶️ Run which task?", _task_picker("runp", RUNNABLE)),
+    "📄 Logs": lambda cid: send(cid, "📄 Log of which task?", _task_picker("logp", RUNNABLE)),
+    "⏰ Set time": lambda cid: send(cid, "⏰ Set time for which task?", _task_picker("setp", SCHEDULABLE)),
+}
+
+
 def on_message(msg: dict) -> None:
     chat_id = msg["chat"]["id"]
     text = (msg.get("text") or "").strip()
 
-    # A pending custom-time reply?
+    # A pending custom-time reply? (reply-keyboard taps are not time values.)
     key = str(chat_id)
-    if key in _pending and text and not text.startswith("/"):
+    if key in _pending and text and not text.startswith("/") and text not in _REPLY_ACTIONS:
         task = _pending.pop(key)
         times = [] if text.lower() in ("off", "none", "disable") else \
             [t for t in text.replace(" ", "").split(",") if t]
@@ -185,14 +210,30 @@ def on_message(msg: dict) -> None:
         send(chat_id, "✅ Updated.\n\n" + _fmt_schedule(), _back_menu_kb())
         return
 
+    authorized = (not env.CONTROL_ALLOWED) or allowed(chat_id)
     cmd = text.split("@")[0].split()[0].lower() if text else ""
+
     if cmd == "/start":
-        ok = "✅ authorized" if allowed(chat_id) or not env.CONTROL_ALLOWED else "⛔ not authorized"
-        send(chat_id, f"👋 mekoo-op control.\nYour chat id: <code>{chat_id}</code> ({ok})")
-    if not env.CONTROL_ALLOWED or allowed(chat_id):
-        send(chat_id, MENU_TEXT, _menu_kb())
-    elif cmd != "/start":
+        ok = "✅ authorized" if authorized else "⛔ not authorized"
+        # Install the persistent reply keyboard alongside the welcome line.
+        send(chat_id, f"👋 mekoo-op control.\nYour chat id: <code>{chat_id}</code> ({ok})",
+             _reply_kb() if authorized else None)
+        if authorized:
+            send(chat_id, MENU_TEXT, _menu_kb())
+        return
+
+    if not authorized:
         send(chat_id, f"⛔ Unauthorized. Your chat id: <code>{chat_id}</code>")
+        return
+
+    # A reply-keyboard button tap opens its view directly.
+    action = _REPLY_ACTIONS.get(text)
+    if action:
+        action(chat_id)
+        return
+
+    # /menu or anything else → show the top menu.
+    send(chat_id, MENU_TEXT, _menu_kb())
 
 
 def on_callback(cq: dict) -> None:
