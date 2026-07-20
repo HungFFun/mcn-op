@@ -1,0 +1,23 @@
+services:
+  mekoo-op:
+    build: .
+    image: mekoo-op
+    container_name: mekoo-op
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+    volumes:
+      # Secrets: the app's own loader parses .env (handles inline comments/quotes),
+      # so mount it rather than using compose env_file. Read-only.
+      - ./.env:/app/.env:ro
+      # Persist logs, schedule.json, dedup state, carryover surplus, PDFs.
+      - ./run:/app/run
+    # "Run the project" = control bot + background scheduler.
+    command: ["python3", "-m", "bot"]
+    healthcheck:
+      # scheduler.serve() touches run/scheduler.heartbeat every ~20s; stale >120s = dead.
+      test: ["CMD", "python3", "-c", "import os,time,sys; p='run/scheduler.heartbeat'; sys.exit(0 if os.path.exists(p) and time.time()-os.path.getmtime(p) < 120 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

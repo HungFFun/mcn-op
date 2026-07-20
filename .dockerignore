@@ -1,0 +1,20 @@
+# Never bake secrets or scratch into the image — .env is mounted at runtime.
+.env
+*.env
+!.env.example
+run/
+
+# VCS / caches / local tooling
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+.vscode/
+.idea/
+.DS_Store
+
+# Docs not needed at runtime
+CLAUDE.md
+README.md
