@@ -2,11 +2,12 @@
 
 Start it once and leave it running (Windows: `scripts\\run.bat bot`). It:
   - runs the daily scheduler in a background thread (fires tasks on their times),
-  - drives everything from an inline-button menu in Telegram (no typing commands).
+  - drives everything from a persistent reply keyboard above the input (no typing).
 
-Send /start (or /menu) to open the menu. From there: Status, Schedule, Run a
-task (with a Dry-run option + confirm before a real send), Logs, and Set time
-(presets or a custom reply).
+Send /start once to install the keyboard: Status, Schedule, Run, Set time.
+Tapping a button opens that view; picking a task, confirming a real run, or
+choosing preset/custom times uses inline buttons on that message. Status already
+reports each task's last-run time, so there is no separate Logs button.
 
 Config: TELEGRAM_CONTROL_BOT_TOKEN (falls back to the recap bot),
 TELEGRAM_CONTROL_CHAT_IDS (comma-separated allow-list). See .env.example.
@@ -34,6 +35,19 @@ _MAXLEN = 3500
 SCHEDULABLE = scheduler.SCHEDULABLE          # payout, mcn-report, daily-recap, leave-watch
 RUNNABLE = list(scheduler.TASKS)             # + check
 _pending: dict[str, str] = {}                # chat_id -> task awaiting a custom time reply
+
+# Pretty display names for the task slugs (used in messages; slug stays the key).
+LABELS = {
+    "payout": "💸 Payout Batch",
+    "mcn-report": "📊 MCN Daily Report",
+    "daily-recap": "🧾 Daily Payout Recap",
+    "leave-watch": "🚪 MCN Leave-Watch",
+    "check": "🩺 Config Check",
+}
+
+
+def _label(task: str) -> str:
+    return LABELS.get(task, task)
 
 
 # --- Telegram helpers --------------------------------------------------------
@@ -77,14 +91,6 @@ def allowed(chat_id) -> bool:
 
 # --- menus -------------------------------------------------------------------
 
-def _menu_kb() -> str:
-    return _kb([
-        [("📊 Status", "status"), ("🗓 Schedule", "sched")],
-        [("▶️ Run", "run"), ("📄 Logs", "log")],
-        [("⏰ Set time", "set")],
-    ])
-
-
 # Persistent reply keyboard: sits above the input box, always visible, one tap
 # sends the button label as a message. Installed once on /start; on_message maps
 # each label back to the matching top-level view (drill-down stays inline).
@@ -92,18 +98,15 @@ def _reply_kb() -> str:
     return json.dumps({
         "keyboard": [
             [{"text": "📊 Status"}, {"text": "🗓 Schedule"}],
-            [{"text": "▶️ Run"}, {"text": "📄 Logs"}],
-            [{"text": "⏰ Set time"}],
+            [{"text": "▶️ Run"}, {"text": "⏰ Set time"}],
         ],
         "resize_keyboard": True,
         "is_persistent": True,
     }, ensure_ascii=False)
 
 
-def _task_picker(prefix: str, tasks: list[str], back: str = "menu") -> str:
-    rows = [[(t, f"{prefix}:{t}")] for t in tasks]
-    rows.append([("⬅️ Menu", back)])
-    return _kb(rows)
+def _task_picker(prefix: str, tasks: list[str]) -> str:
+    return _kb([[(_label(t), f"{prefix}:{t}")] for t in tasks])
 
 
 def _presets(task: str) -> list[str]:
@@ -112,83 +115,59 @@ def _presets(task: str) -> list[str]:
     return ["08:00", "08:00,15:00", "08:00,12:00,18:00"]
 
 
-MENU_TEXT = "🤖 <b>mekoo-op control</b>\nChoose an action:"
-
-
 def _fmt_schedule() -> str:
     sched = scheduler.load_schedule()
-    rows = [f"• <b>{esc(k)}</b>: {', '.join(sched.get(k, [])) or '(disabled)'}" for k in SCHEDULABLE]
-    return "🗓 <b>Schedule (ICT)</b>\n" + "\n".join(rows)
+    rows = [f"• <b>{esc(_label(k))}</b>: {', '.join(sched.get(k, [])) or '(đã tắt)'}" for k in SCHEDULABLE]
+    return "🗓 <b>Lịch chạy (ICT)</b>\n" + "\n".join(rows)
 
 
 def _fmt_status() -> str:
     hb = scheduler.HEARTBEAT
-    alive = "down"
+    alive = "🔴 dừng"
     if hb.exists():
         try:
             age = (scheduler.now_ict() - scheduler.datetime.fromisoformat(
                 hb.read_text(encoding="utf-8").strip())).total_seconds()
-            alive = f"up ({int(age)}s ago)" if age < 90 else f"stale ({int(age)}s)"
+            alive = f"🟢 chạy ({int(age)}s trước)" if age < 90 else f"🟡 cũ ({int(age)}s)"
         except (OSError, ValueError):
             pass
-    lines = [f"🩺 <b>Scheduler:</b> {alive}", "", _fmt_schedule(), "", "🏃 <b>Last run</b>"]
+    lines = [f"🩺 <b>Scheduler:</b> {alive}", "", _fmt_schedule(), "", "🏃 <b>Lần chạy gần nhất</b>"]
     for k in RUNNABLE:
         f = scheduler.LOG_DIR / f"{k}.log"
         if f.exists():
             mt = scheduler.datetime.fromtimestamp(f.stat().st_mtime, scheduler.ICT)
-            lines.append(f"• {esc(k)}: {mt:%Y-%m-%d %H:%M}")
+            lines.append(f"• {esc(_label(k))}: {mt:%Y-%m-%d %H:%M}")
         else:
-            lines.append(f"• {esc(k)}: —")
+            lines.append(f"• {esc(_label(k))}: —")
     return "\n".join(lines)
-
-
-def _back_menu_kb() -> str:
-    return _kb([[("⬅️ Menu", "menu")]])
 
 
 # --- task execution ----------------------------------------------------------
 
 def _run_and_report(chat_id, task: str, no_send: bool) -> None:
-    send(chat_id, f"▶️ Running <b>{esc(task)}</b>{' (dry-run)' if no_send else ''}…")
+    send(chat_id, f"▶️ Đang chạy <b>{esc(_label(task))}</b>{' (chạy thử)' if no_send else ''}…")
     try:
         rc = scheduler.run_task(task, block=True, no_send=no_send)
     except Exception as exc:  # noqa: BLE001
-        send(chat_id, f"❌ <b>{esc(task)}</b> failed: {esc(f'{type(exc).__name__}: {exc}')}", _back_menu_kb())
+        send(chat_id, f"❌ <b>{esc(_label(task))}</b> lỗi: {esc(f'{type(exc).__name__}: {exc}')}")
         return
-    status = "✅" if rc == 0 else f"❌ (rc={rc})"
+    status = "✅ Xong" if rc == 0 else f"❌ Lỗi (rc={rc})"
     tail = scheduler.tail(task, 30)
     body = f"\n<pre>{esc(tail)}</pre>" if tail else ""
-    msg = f"{status} <b>{esc(task)}</b> done{body}"
+    msg = f"{status} — <b>{esc(_label(task))}</b>{body}"
     if len(msg) > _MAXLEN:
-        msg = f"{status} <b>{esc(task)}</b> done — open Logs for details."
-    send(chat_id, msg, _back_menu_kb())
-
-
-def _send_log(chat_id, task: str, lines: int = 40) -> None:
-    text = scheduler.tail(task, lines)
-    if not text:
-        send(chat_id, f"📄 <b>{esc(task)}</b>: no log yet.", _back_menu_kb())
-        return
-    if len(text) <= _MAXLEN:
-        send(chat_id, f"📄 <b>{esc(task)}</b> · last {lines} lines\n<pre>{esc(text)}</pre>", _back_menu_kb())
-        return
-    path = scheduler.LOG_DIR / f"{task}.log"
-    with open(path, "rb") as fh:
-        requests.post(_API.format(token=env.CONTROL_BOT_TOKEN, method="sendDocument"),
-                      data={"chat_id": chat_id, "caption": f"{task}.log"},
-                      files={"document": (f"{task}.log", fh, "text/plain")}, timeout=60)
-    send(chat_id, "⬆️ Full log sent as a file.", _back_menu_kb())
+        msg = f"{status} — <b>{esc(_label(task))}</b>"
+    send(chat_id, msg)
 
 
 # --- update handling ---------------------------------------------------------
 
 # Reply-keyboard labels → the top-level view to open (inline drill-down follows).
 _REPLY_ACTIONS = {
-    "📊 Status": lambda cid: send(cid, _fmt_status(), _back_menu_kb()),
-    "🗓 Schedule": lambda cid: send(cid, _fmt_schedule(), _back_menu_kb()),
-    "▶️ Run": lambda cid: send(cid, "▶️ Run which task?", _task_picker("runp", RUNNABLE)),
-    "📄 Logs": lambda cid: send(cid, "📄 Log of which task?", _task_picker("logp", RUNNABLE)),
-    "⏰ Set time": lambda cid: send(cid, "⏰ Set time for which task?", _task_picker("setp", SCHEDULABLE)),
+    "📊 Status": lambda cid: send(cid, _fmt_status()),
+    "🗓 Schedule": lambda cid: send(cid, _fmt_schedule()),
+    "▶️ Run": lambda cid: send(cid, "▶️ Chạy task nào?", _task_picker("runp", RUNNABLE)),
+    "⏰ Set time": lambda cid: send(cid, "⏰ Đặt giờ cho task nào?", _task_picker("setp", SCHEDULABLE)),
 }
 
 
@@ -205,9 +184,9 @@ def on_message(msg: dict) -> None:
         try:
             scheduler.set_times(task, times)
         except ValueError as exc:
-            send(chat_id, f"⚠️ {esc(exc)}", _back_menu_kb())
+            send(chat_id, f"⚠️ {esc(exc)}")
             return
-        send(chat_id, "✅ Updated.\n\n" + _fmt_schedule(), _back_menu_kb())
+        send(chat_id, "✅ Updated.\n\n" + _fmt_schedule())
         return
 
     authorized = (not env.CONTROL_ALLOWED) or allowed(chat_id)
@@ -218,8 +197,6 @@ def on_message(msg: dict) -> None:
         # Install the persistent reply keyboard alongside the welcome line.
         send(chat_id, f"👋 mekoo-op control.\nYour chat id: <code>{chat_id}</code> ({ok})",
              _reply_kb() if authorized else None)
-        if authorized:
-            send(chat_id, MENU_TEXT, _menu_kb())
         return
 
     if not authorized:
@@ -232,8 +209,8 @@ def on_message(msg: dict) -> None:
         action(chat_id)
         return
 
-    # /menu or anything else → show the top menu.
-    send(chat_id, MENU_TEXT, _menu_kb())
+    # Anything else → nudge to the keyboard (and re-install it if dismissed).
+    send(chat_id, "👇 Chọn một mục từ bàn phím bên dưới.", _reply_kb())
 
 
 def on_callback(cq: dict) -> None:
@@ -251,7 +228,7 @@ def on_callback(cq: dict) -> None:
     # execute a run: rgo:<task>:<0|1>
     if data.startswith("rgo:"):
         _, task, dry = data.split(":")
-        edit(chat_id, mid, MENU_TEXT, _menu_kb())
+        edit(chat_id, mid, f"▶️ Đã đưa <b>{esc(_label(task))}</b> vào hàng đợi…")
         threading.Thread(target=_run_and_report, args=(chat_id, task, dry == "1"), daemon=True).start()
         return
     # apply preset time: setv:<task>:<val>
@@ -260,50 +237,39 @@ def on_callback(cq: dict) -> None:
         times = [] if val == "off" else val.split(",")
         try:
             scheduler.set_times(task, times)
-            edit(chat_id, mid, "✅ Updated.\n\n" + _fmt_schedule(), _back_menu_kb())
+            edit(chat_id, mid, "✅ Đã cập nhật.\n\n" + _fmt_schedule())
         except ValueError as exc:
-            edit(chat_id, mid, f"⚠️ {esc(exc)}", _back_menu_kb())
+            edit(chat_id, mid, f"⚠️ {esc(exc)}")
         return
     # custom time entry: setc:<task>
     if data.startswith("setc:"):
         task = data.split(":", 1)[1]
         _pending[str(chat_id)] = task
-        edit(chat_id, mid, f"✏️ Reply with times for <b>{esc(task)}</b>, e.g. "
-             f"<code>08:00,15:00</code> (or <code>off</code>).", _back_menu_kb())
+        edit(chat_id, mid, f"✏️ Nhập giờ cho <b>{esc(_label(task))}</b>, ví dụ "
+             f"<code>08:00,15:00</code> (hoặc <code>off</code> để tắt).")
         return
-    # submenu for a task under Run/Log/Set
+    # submenu for a task under Run/Set
     if ":" in data:
         prefix, task = data.split(":", 1)
         if prefix == "runp":
-            kb = _kb([[("▶️ Run (send)", f"rcfm:{task}"), ("🧪 Dry-run", f"rgo:{task}:1")],
-                      [("⬅️ Back", "run")]])
-            edit(chat_id, mid, f"Run <b>{esc(task)}</b>?", kb)
+            kb = _kb([[("▶️ Chạy thật", f"rcfm:{task}"), ("🧪 Chạy thử", f"rgo:{task}:1")],
+                      [("⬅️ Quay lại", "run")]])
+            edit(chat_id, mid, f"Chạy <b>{esc(_label(task))}</b>?", kb)
         elif prefix == "rcfm":
-            kb = _kb([[("✅ Confirm send", f"rgo:{task}:0"), ("⬅️ Back", "run")]])
-            edit(chat_id, mid, f"⚠️ <b>{esc(task)}</b> will run for real and may post to Telegram. Confirm?", kb)
-        elif prefix == "logp":
-            _send_log(chat_id, task)
-            edit(chat_id, mid, MENU_TEXT, _menu_kb())
+            kb = _kb([[("✅ Xác nhận chạy", f"rgo:{task}:0"), ("⬅️ Quay lại", "run")]])
+            edit(chat_id, mid, f"⚠️ <b>{esc(_label(task))}</b> sẽ chạy thật và có thể gửi lên Telegram. Xác nhận?", kb)
         elif prefix == "setp":
             rows = [[(p, f"setv:{task}:{p}")] for p in _presets(task)]
-            rows.append([("🚫 Off", f"setv:{task}:off"), ("✏️ Custom", f"setc:{task}")])
-            rows.append([("⬅️ Back", "set")])
-            cur = ", ".join(scheduler.load_schedule().get(task, [])) or "(disabled)"
-            edit(chat_id, mid, f"⏰ <b>{esc(task)}</b> — now: {cur}\nPick times:", _kb(rows))
+            rows.append([("🚫 Tắt", f"setv:{task}:off"), ("✏️ Tùy chỉnh", f"setc:{task}")])
+            rows.append([("⬅️ Quay lại", "set")])
+            cur = ", ".join(scheduler.load_schedule().get(task, [])) or "(đã tắt)"
+            edit(chat_id, mid, f"⏰ <b>{esc(_label(task))}</b> — hiện tại: {cur}\nChọn giờ:", _kb(rows))
         return
-    # top-level
-    if data == "menu":
-        edit(chat_id, mid, MENU_TEXT, _menu_kb())
-    elif data == "status":
-        edit(chat_id, mid, _fmt_status(), _back_menu_kb())
-    elif data == "sched":
-        edit(chat_id, mid, _fmt_schedule(), _back_menu_kb())
-    elif data == "run":
-        edit(chat_id, mid, "▶️ Run which task?", _task_picker("runp", RUNNABLE))
-    elif data == "log":
-        edit(chat_id, mid, "📄 Log of which task?", _task_picker("logp", RUNNABLE))
+    # top-level (reachable via the "⬅️ Quay lại" buttons inside the task flows)
+    if data == "run":
+        edit(chat_id, mid, "▶️ Chạy task nào?", _task_picker("runp", RUNNABLE))
     elif data == "set":
-        edit(chat_id, mid, "⏰ Set time for which task?", _task_picker("setp", SCHEDULABLE))
+        edit(chat_id, mid, "⏰ Đặt giờ cho task nào?", _task_picker("setp", SCHEDULABLE))
 
 
 def poll() -> None:
