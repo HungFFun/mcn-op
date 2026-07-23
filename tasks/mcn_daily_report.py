@@ -12,29 +12,56 @@ single HTML message, and posts it to the Mekoo group via the recap bot.
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from common import ch, env, telegram
 
 MCN = env.MEKOO_MCN_ID
+
+ICT = ZoneInfo("Asia/Ho_Chi_Minh")
 
 # Inviter aliases -> display label (from the skill).
 INDO_ALIAS = 1658892427   # @banned_tv1
 CS_ALIAS = 1063256681     # @Femirastar
 BOT_ALIAS = 2310953262    # Auto Invite Bot
 
-# --- Queries (verbatim from the skill; MCN id inlined) -----------------------
 
-Q_MEMBERS = f"""
+def ict_window() -> dict[str, str]:
+    """The report's date window, computed ONCE in Python (ICT).
+
+    All four queries share these literals instead of each calling
+    now('Asia/Ho_Chi_Minh') independently — four separate ClickHouse
+    round-trips that could evaluate now() on either side of an ICT midnight
+    and disagree by a day (the 2026-07-22 Query-D drift). Windows are
+    yesterday and MTD-through-yesterday (mtd_end exclusive).
+    """
+    today = datetime.now(ICT).date()
+    return {
+        "today": today.isoformat(),
+        "yesterday": (today - timedelta(days=1)).isoformat(),
+        "mtd_start": today.replace(day=1).isoformat(),
+        "mtd_end": today.isoformat(),  # exclusive
+    }
+
+
+# --- Queries (verbatim from the skill; MCN id + ICT window literals inlined) --
+# Every window boundary is a toDate('YYYY-MM-DD') literal from ict_window(),
+# never now('Asia/Ho_Chi_Minh'), so the four queries can never straddle midnight.
+
+def q_members(w: dict[str, str]) -> str:
+    return f"""
 WITH '{MCN}' AS mekoo_id,
-  toStartOfMonth(toDate(now('Asia/Ho_Chi_Minh'))) AS cur_start,
-  toDate(now('Asia/Ho_Chi_Minh')) AS cur_end
+  toDate('{w["mtd_start"]}') AS cur_start,
+  toDate('{w["mtd_end"]}') AS cur_end
 SELECT
   (SELECT count() FROM (SELECT user_alias FROM tevi_warehouse.dim_users WHERE org_id = mekoo_id GROUP BY user_alias)) AS total_members,
   (SELECT max(active_creator_count) FROM tevi_warehouse.rpt_mcn_performance FINAL WHERE mcn_id = mekoo_id AND date_key >= cur_start AND date_key < cur_end) AS peak_active_mtd
 """
 
-Q_STATUS = f"""
+
+def q_status(w: dict[str, str]) -> str:
+    return f"""
 WITH '{MCN}' AS mekoo_id,
 mekoo_in_org AS (
   SELECT user_alias, max(user_suspended_at) AS user_suspended_at
@@ -53,17 +80,19 @@ SELECT
   (SELECT countIf(u.user_suspended_at = toDateTime('1970-01-01') AND coalesce(c.is_active_30d, 0) = 0)
    FROM mekoo_in_org u LEFT JOIN mekoo_creators c ON c.user_alias = u.user_alias) AS dormant,
   (SELECT count() FROM last_mekoo_rev WHERE user_alias NOT IN (SELECT user_alias FROM mekoo_in_org)) AS left_total,
-  (SELECT countIf(last_rev_date >= toStartOfMonth(toDate(now('Asia/Ho_Chi_Minh'))) AND last_rev_date < toDate(now('Asia/Ho_Chi_Minh'))) FROM last_mekoo_rev WHERE user_alias NOT IN (SELECT user_alias FROM mekoo_in_org)) AS left_mtd
+  (SELECT countIf(last_rev_date >= toDate('{w["mtd_start"]}') AND last_rev_date < toDate('{w["mtd_end"]}')) FROM last_mekoo_rev WHERE user_alias NOT IN (SELECT user_alias FROM mekoo_in_org)) AS left_mtd
 """
+
 
 # Verification uses fct_tick_space_verifications (TEV-1105, from 2026-07-07).
 # The old fct_channel_verifications stalled 2026-05-27 across all Tevi — do NOT
 # use it. outcome = approved / rejected / pending, with a decided_at timestamp.
 # Caveat: the new model does not track revokes done outside the application flow.
-Q_KYC = f"""
+def q_kyc(w: dict[str, str]) -> str:
+    return f"""
 WITH '{MCN}' AS mekoo_id,
-  toStartOfMonth(toDate(now('Asia/Ho_Chi_Minh'))) AS cur_start,
-  toDate(now('Asia/Ho_Chi_Minh')) AS cur_end,
+  toDate('{w["mtd_start"]}') AS cur_start,
+  toDate('{w["mtd_end"]}') AS cur_end,
 mekoo_users AS (SELECT DISTINCT user_alias FROM tevi_warehouse.dim_users WHERE org_id = mekoo_id),
 kyc_per_user AS (
   SELECT user_alias, argMax(status, submitted_at) AS latest_status
@@ -94,15 +123,17 @@ SELECT
   ) AS pending_applications
 """
 
+
 # Reports two funnel stages per inviter:
 #   Sent     = invitation rows created in the window (by created_at).
 #   Accepted = first-accepted attribution — each invitee counted once, credited
 #              to their EARLIEST accepted inviter (argMin), matching the admin panel.
-Q_INVITES = f"""
+def q_invites(w: dict[str, str]) -> str:
+    return f"""
 WITH '{MCN}' AS mekoo_id,
-  toDate(now('Asia/Ho_Chi_Minh')) - 1 AS yesterday,
-  toStartOfMonth(toDate(now('Asia/Ho_Chi_Minh'))) AS mtd_start,
-  toDate(now('Asia/Ho_Chi_Minh')) AS mtd_end,
+  toDate('{w["yesterday"]}') AS yesterday,
+  toDate('{w["mtd_start"]}') AS mtd_start,
+  toDate('{w["mtd_end"]}') AS mtd_end,
 joined_yest AS (
   SELECT user_alias FROM tevi_warehouse.dim_users
   WHERE org_id = mekoo_id AND toDate(org_joined_at) = yesterday
@@ -163,13 +194,27 @@ def _i(v) -> int:
         return 0
 
 
-def fetch() -> dict:
+def fetch(w: dict[str, str]) -> dict:
     d = {}
-    d.update(ch.query_one(Q_MEMBERS))
-    d.update(ch.query_one(Q_STATUS))
-    d.update(ch.query_one(Q_KYC))
-    d.update(ch.query_one(Q_INVITES))
+    d.update(ch.query_one(q_members(w)))
+    d.update(ch.query_one(q_status(w)))
+    d.update(ch.query_one(q_kyc(w)))
+    d.update(ch.query_one(q_invites(w)))
     return {k: _i(v) for k, v in d.items()}
+
+
+def check_invites_sane(d: dict) -> str | None:
+    """Guardrail against the Query-D drift: no daily invitation activity at all
+    while MTD sent is non-zero almost certainly means yesterday's window was
+    lost. Returns a reason string when the data looks wrong, else None.
+    """
+    daily = _i(d.get("total_sent_yest")) + _i(d.get("total_yest"))
+    mtd_sent = (_i(d.get("indo_sent_mtd")) + _i(d.get("cs_sent_mtd"))
+                + _i(d.get("bot_sent_mtd")))
+    if daily == 0 and mtd_sent > 0:
+        return (f"daily invitations all zero (sent+accepted=0) but MTD sent="
+                f"{mtd_sent} — yesterday's window was likely lost")
+    return None
 
 
 def format_message(d: dict, report_date: str) -> str:
@@ -224,14 +269,23 @@ def main() -> None:
                     help="skip ClickHouse; render the message from sample data (offline test)")
     args = ap.parse_args()
 
-    report_date = (date.today() - timedelta(days=1)).strftime("%d/%m/%Y")
-    data = _SAMPLE if args.sample else fetch()
+    w = ict_window()
+    report_date = datetime.strptime(w["yesterday"], "%Y-%m-%d").strftime("%d/%m/%Y")
+    data = _SAMPLE if args.sample else fetch(w)
     msg = format_message(data, report_date)
     print(msg)
 
     if args.sample:
         print("\n[sample mode] not sent.")
         return
+
+    reason = None if args.sample else check_invites_sane(data)
+    if reason:
+        print(f"\n⚠️  Sanity check failed: {reason}")
+        print("Refusing to send a likely-wrong report. Re-run manually once the "
+              "warehouse has yesterday's invitation rows.")
+        raise SystemExit(1)
+
     if not args.send:
         print("\n[--no-send] not sent.")
         return
