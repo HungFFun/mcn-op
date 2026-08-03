@@ -21,10 +21,10 @@ MCN = env.MEKOO_MCN_ID
 
 ICT = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# Inviter aliases -> display label (from the skill).
-INDO_ALIAS = 1658892427   # @banned_tv1
-CS_ALIAS = 1063256681     # @Femirastar
-BOT_ALIAS = 2310953262    # Auto Invite Bot
+# Inviter aliases -> display label (configured in common/env.py).
+INDO_ALIAS = env.MCN_ALIAS_INDO   # @banned_tv1
+CS_ALIAS = env.MCN_ALIAS_CS       # @Femirastar
+BOT_ALIAS = env.MCN_ALIAS_BOT     # Auto Invite Bot
 
 
 def ict_window() -> dict[str, str]:

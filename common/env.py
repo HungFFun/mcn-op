@@ -134,6 +134,13 @@ TIMEZONE = "Asia/Ho_Chi_Minh"
 AGENCY_ID_ID = get("AGENCY_ID_ID", "1711465765")
 AGENCY_ID_PH = get("AGENCY_ID_PH", "3635488650")
 
+# Inviter aliases attributed in the MCN daily report. These are Telegram user
+# ids that change when the CS/Indo account behind a lane is swapped, so they
+# live here rather than inline in the SQL.
+MCN_ALIAS_INDO = int(get("MCN_ALIAS_INDO", "1658892427"))   # @banned_tv1
+MCN_ALIAS_CS = int(get("MCN_ALIAS_CS", "4224425199"))       # @Femirastar
+MCN_ALIAS_BOT = int(get("MCN_ALIAS_BOT", "2310953262"))     # Auto Invite Bot
+
 
 def require_clickhouse() -> None:
     missing = [k for k in ("host", "username", "database") if not CLICKHOUSE.get(k)]
