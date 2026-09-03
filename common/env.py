@@ -139,7 +139,6 @@ AGENCY_ID_PH = get("AGENCY_ID_PH", "3635488650")
 # live here rather than inline in the SQL.
 MCN_ALIAS_INDO = int(get("MCN_ALIAS_INDO", "1658892427"))   # @banned_tv1
 MCN_ALIAS_CS = int(get("MCN_ALIAS_CS", "4224425199"))       # @Femirastar
-MCN_ALIAS_BOT = int(get("MCN_ALIAS_BOT", "2310953262"))     # Auto Invite Bot
 
 
 def require_clickhouse() -> None:

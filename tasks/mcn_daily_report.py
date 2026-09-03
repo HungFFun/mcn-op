@@ -24,7 +24,6 @@ ICT = ZoneInfo("Asia/Ho_Chi_Minh")
 # Inviter aliases -> display label (configured in common/env.py).
 INDO_ALIAS = env.MCN_ALIAS_INDO   # @banned_tv1
 CS_ALIAS = env.MCN_ALIAS_CS       # @Femirastar
-BOT_ALIAS = env.MCN_ALIAS_BOT     # Auto Invite Bot
 
 
 def ict_window() -> dict[str, str]:
@@ -146,7 +145,7 @@ attrib_yest AS (
   SELECT invitee_alias, argMin(inviter_alias, updated_at) AS latest_inviter
   FROM tevi_warehouse.fct_mcn_invitations
   WHERE mcn_id = mekoo_id AND status = 'accepted'
-    AND inviter_alias IN ({CS_ALIAS}, {INDO_ALIAS}, {BOT_ALIAS})
+    AND inviter_alias IN ({CS_ALIAS}, {INDO_ALIAS})
     AND invitee_alias IN (SELECT user_alias FROM joined_yest)
   GROUP BY invitee_alias
 ),
@@ -154,7 +153,7 @@ attrib_mtd AS (
   SELECT invitee_alias, argMin(inviter_alias, updated_at) AS latest_inviter
   FROM tevi_warehouse.fct_mcn_invitations
   WHERE mcn_id = mekoo_id AND status = 'accepted'
-    AND inviter_alias IN ({CS_ALIAS}, {INDO_ALIAS}, {BOT_ALIAS})
+    AND inviter_alias IN ({CS_ALIAS}, {INDO_ALIAS})
     AND invitee_alias IN (SELECT user_alias FROM joined_mtd)
   GROUP BY invitee_alias
 ),
@@ -164,24 +163,20 @@ sent_counts AS (
     countIf(toDate(created_at) = yesterday) AS sent_yest,
     countIf(toDate(created_at) >= mtd_start AND toDate(created_at) < mtd_end) AS sent_mtd
   FROM tevi_warehouse.fct_mcn_invitations
-  WHERE mcn_id = mekoo_id AND inviter_alias IN ({CS_ALIAS}, {INDO_ALIAS}, {BOT_ALIAS})
+  WHERE mcn_id = mekoo_id AND inviter_alias IN ({CS_ALIAS}, {INDO_ALIAS})
   GROUP BY inviter_alias
 )
 SELECT
   (SELECT countIf(latest_inviter = {INDO_ALIAS}) FROM attrib_yest) AS indo_yest,
   (SELECT countIf(latest_inviter = {CS_ALIAS}) FROM attrib_yest) AS cs_yest,
-  (SELECT countIf(latest_inviter = {BOT_ALIAS}) FROM attrib_yest) AS bot_yest,
   (SELECT count() FROM attrib_yest) AS total_yest,
   (SELECT countIf(latest_inviter = {INDO_ALIAS}) FROM attrib_mtd) AS indo_mtd,
   (SELECT countIf(latest_inviter = {CS_ALIAS}) FROM attrib_mtd) AS cs_mtd,
-  (SELECT countIf(latest_inviter = {BOT_ALIAS}) FROM attrib_mtd) AS bot_mtd,
   (SELECT count() FROM attrib_mtd) AS total_mtd,
   (SELECT sent_yest FROM sent_counts WHERE inviter_alias = {INDO_ALIAS}) AS indo_sent_yest,
   (SELECT sent_yest FROM sent_counts WHERE inviter_alias = {CS_ALIAS}) AS cs_sent_yest,
-  (SELECT sent_yest FROM sent_counts WHERE inviter_alias = {BOT_ALIAS}) AS bot_sent_yest,
   (SELECT sent_mtd FROM sent_counts WHERE inviter_alias = {INDO_ALIAS}) AS indo_sent_mtd,
   (SELECT sent_mtd FROM sent_counts WHERE inviter_alias = {CS_ALIAS}) AS cs_sent_mtd,
-  (SELECT sent_mtd FROM sent_counts WHERE inviter_alias = {BOT_ALIAS}) AS bot_sent_mtd,
   (SELECT sum(sent_yest) FROM sent_counts) AS total_sent_yest,
   (SELECT sum(sent_mtd)  FROM sent_counts) AS total_sent_mtd
 """
@@ -209,8 +204,7 @@ def check_invites_sane(d: dict) -> str | None:
     lost. Returns a reason string when the data looks wrong, else None.
     """
     daily = _i(d.get("total_sent_yest")) + _i(d.get("total_yest"))
-    mtd_sent = (_i(d.get("indo_sent_mtd")) + _i(d.get("cs_sent_mtd"))
-                + _i(d.get("bot_sent_mtd")))
+    mtd_sent = _i(d.get("indo_sent_mtd")) + _i(d.get("cs_sent_mtd"))
     if daily == 0 and mtd_sent > 0:
         return (f"daily invitations all zero (sent+accepted=0) but MTD sent="
                 f"{mtd_sent} — yesterday's window was likely lost")
@@ -244,7 +238,6 @@ def format_message(d: dict, report_date: str) -> str:
         f"🎯 <b>Invitations</b>  (daily · MTD)\n\n"
         + inviter("@banned_tv1", "indo_sent_yest", "indo_sent_mtd", "indo_yest", "indo_mtd") + "\n"
         + inviter("@Femirastar", "cs_sent_yest", "cs_sent_mtd", "cs_yest", "cs_mtd") + "\n"
-        + inviter("Auto Invite Bot (2310953262)", "bot_sent_yest", "bot_sent_mtd", "bot_yest", "bot_mtd") + "\n"
         + inviter("Total", "total_sent_yest", "total_sent_mtd", "total_yest", "total_mtd").rstrip()
     )
 
@@ -254,10 +247,10 @@ _SAMPLE = {
     "dormant": 2529, "left_mtd": 2, "left_total": 550,
     "kyc_approved": 1708, "verified_total": 2088, "granted_mtd": 18,
     "pending_applications": 7,
-    "indo_yest": 25, "cs_yest": 0, "bot_yest": 17, "total_yest": 43,
-    "indo_mtd": 174, "cs_mtd": 20, "bot_mtd": 99, "total_mtd": 373,
-    "indo_sent_yest": 30, "cs_sent_yest": 4, "bot_sent_yest": 20, "total_sent_yest": 54,
-    "indo_sent_mtd": 210, "cs_sent_mtd": 33, "bot_sent_mtd": 140, "total_sent_mtd": 383,
+    "indo_yest": 25, "cs_yest": 0, "total_yest": 25,
+    "indo_mtd": 174, "cs_mtd": 20, "total_mtd": 194,
+    "indo_sent_yest": 30, "cs_sent_yest": 4, "total_sent_yest": 34,
+    "indo_sent_mtd": 210, "cs_sent_mtd": 33, "total_sent_mtd": 243,
 }
 
 
