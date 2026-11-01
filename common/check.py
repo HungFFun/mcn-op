@@ -38,7 +38,7 @@ def main() -> None:
 
     print("== Business ==")
     print(f"  MCN id     : {env.MEKOO_MCN_ID}")
-    print(f"  agencies   : ID={env.AGENCY_ID_ID}  PH={env.AGENCY_ID_PH}")
+    print(f"  agencies   : ID={env.AGENCY_NAME_ID!r}  PH={env.AGENCY_NAME_PH!r}")
     print(f"  state dir  : {env.STATE_DIR}")
 
     if not args.live:

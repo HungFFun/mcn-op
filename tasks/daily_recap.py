@@ -4,6 +4,11 @@ Ports the `tevi-daily-recap` skill. One ClickHouse query returns yesterday's
 closed-payout stats for both agencies; a message per agency is posted to its
 recap group.
 
+Source is `tevi_warehouse.rpt_agency_payout` — a nightly-rebuilt table, so it
+needs no grant on raw `tevi_fiat.wd_tx` (which `stg_fiat__withdrawals` reads
+and which was revoked). It has no agency_id, so agencies are matched by name.
+A freshness guard refuses to send when last night's rebuild has not landed.
+
     python3 -m tasks.daily_recap              # query + send both
     python3 -m tasks.daily_recap --no-send    # query + print, don't post
     python3 -m tasks.daily_recap --sample     # offline format test
@@ -17,26 +22,56 @@ from datetime import date, timedelta
 from common import ch, env, telegram
 
 AGENCIES = {
-    env.AGENCY_ID_ID: {"label": "LUINDO Payout 🇮🇩", "chat": env.CHAT_RECAP_ID, "key": "id"},
-    env.AGENCY_ID_PH: {"label": "PHP Payout 🇵🇭", "chat": env.CHAT_RECAP_PH, "key": "ph"},
+    env.AGENCY_NAME_ID: {"label": "LUINDO Payout 🇮🇩", "chat": env.CHAT_RECAP_ID, "key": "id"},
+    env.AGENCY_NAME_PH: {"label": "PHP Payout 🇵🇭", "chat": env.CHAT_RECAP_PH, "key": "ph"},
 }
+
+_NAMES = ", ".join("'" + n.replace("'", "\\'") + "'" for n in AGENCIES)
+
+# The table is rebuilt nightly; it is complete for yesterday only once it holds
+# a row updated after today's ICT midnight. known_agencies catches a renamed
+# agency, which would otherwise read as a silent "no requests closed".
+Q_FRESHNESS = f"""
+SELECT
+  max(updated_at) >= toStartOfDay(now('Asia/Ho_Chi_Minh')) AS is_fresh,
+  toString(max(updated_at)) AS last_updated,
+  groupUniqArrayIf(agency_name, agency_name IN ({_NAMES})
+    AND created_at >= now() - INTERVAL 30 DAY) AS known_agencies
+FROM tevi_warehouse.rpt_agency_payout
+"""
 
 Q_RECAP = f"""
 SELECT
-  agency_country,
-  agency_id,
-  countIf(execution_status IN ('completed','failed')) AS total_closed,
-  countIf(execution_status = 'completed') AS done_count,
-  countIf(execution_status = 'failed') AS fail_count,
-  round(sumIf(amount_usd, execution_status = 'completed'), 2) AS done_usd,
-  round(avgIf(dateDiff('second', released_at, closed_at), execution_status = 'completed' AND released_at > toDateTime('1970-01-02') AND closed_at > toDateTime('1970-01-02') AND closed_at >= released_at) / 60, 1) AS avg_agency_min,
-  round(medianIf(dateDiff('second', released_at, closed_at), execution_status = 'completed' AND released_at > toDateTime('1970-01-02') AND closed_at > toDateTime('1970-01-02') AND closed_at >= released_at) / 60, 1) AS p50_agency_min
-FROM tevi_warehouse.stg_fiat__withdrawals
+  agency_name,
+  countIf(request_status IN ('Success','Failed')) AS total_closed,
+  countIf(request_status = 'Success') AS done_count,
+  countIf(request_status = 'Failed') AS fail_count,
+  round(sumIf(request_amount_usd, request_status = 'Success'), 2) AS done_usd,
+  round(avgIf(dateDiff('second', released_at, closed_at), request_status = 'Success' AND released_at > toDateTime('1970-01-02') AND closed_at > toDateTime('1970-01-02') AND closed_at >= released_at) / 60, 1) AS avg_agency_min,
+  round(medianIf(dateDiff('second', released_at, closed_at), request_status = 'Success' AND released_at > toDateTime('1970-01-02') AND closed_at > toDateTime('1970-01-02') AND closed_at >= released_at) / 60, 1) AS p50_agency_min
+FROM tevi_warehouse.rpt_agency_payout
 WHERE toDate(closed_at, 'Asia/Ho_Chi_Minh') = toDate(now('Asia/Ho_Chi_Minh')) - 1
-  AND agency_id IN ('{env.AGENCY_ID_ID}', '{env.AGENCY_ID_PH}')
-GROUP BY agency_country, agency_id
-ORDER BY agency_country
+  AND agency_name IN ({_NAMES})
+GROUP BY agency_name
+ORDER BY agency_name
 """
+
+
+def check_freshness() -> None:
+    """Abort (non-zero exit, nothing sent) if the source is stale or an agency
+    name no longer matches."""
+    row = (ch.query(Q_FRESHNESS) or [{}])[0]
+    if not int(row.get("is_fresh") or 0):
+        raise SystemExit(
+            f"rpt_agency_payout is stale (last updated_at {row.get('last_updated')}); "
+            "nightly rebuild not landed yet — not sending a partial recap."
+        )
+    missing = set(AGENCIES) - set(row.get("known_agencies") or [])
+    if missing:
+        raise SystemExit(
+            f"No requests in 30 days for agency name(s) {sorted(missing)} — renamed? "
+            "Set AGENCY_NAME_ID / AGENCY_NAME_PH."
+        )
 
 
 def fmt_duration(minutes) -> str:
@@ -75,10 +110,10 @@ def format_message(row: dict, label: str, yesterday: str) -> str:
 
 
 _SAMPLE = [
-    {"agency_country": "ID", "agency_id": env.AGENCY_ID_ID, "total_closed": 42,
+    {"agency_name": env.AGENCY_NAME_ID, "total_closed": 42,
      "done_count": 39, "fail_count": 3, "done_usd": 5123.44,
      "avg_agency_min": 372.0, "p50_agency_min": 210.0},
-    {"agency_country": "PH", "agency_id": env.AGENCY_ID_PH, "total_closed": 18,
+    {"agency_name": env.AGENCY_NAME_PH, "total_closed": 18,
      "done_count": 18, "fail_count": 0, "done_usd": 2210.10,
      "avg_agency_min": 45.0, "p50_agency_min": 33.0},
 ]
@@ -93,12 +128,16 @@ def main() -> None:
     args = ap.parse_args()
 
     yesterday = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
-    rows = _SAMPLE if args.sample else ch.query(Q_RECAP)
-    by_agency = {str(r.get("agency_id")): r for r in rows}
+    if args.sample:
+        rows = _SAMPLE
+    else:
+        check_freshness()
+        rows = ch.query(Q_RECAP)
+    by_agency = {str(r.get("agency_name")): r for r in rows}
 
     sent = []
-    for agency_id, meta in AGENCIES.items():
-        row = by_agency.get(agency_id, {})
+    for agency_name, meta in AGENCIES.items():
+        row = by_agency.get(agency_name, {})
         msg = format_message(row, meta["label"], yesterday)
         print(f"\n----- {meta['label']} -----\n{msg}")
         if args.sample or not args.send:

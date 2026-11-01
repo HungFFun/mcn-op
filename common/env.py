@@ -130,9 +130,12 @@ def require_control_bot() -> None:
 MEKOO_MCN_ID = get("MEKOO_MCN_ID", "0edb1271-3db6-4f70-a84d-58b1029bad40")
 TIMEZONE = "Asia/Ho_Chi_Minh"
 
-# Payout agency IDs (used by the daily recap, which spans both markets).
-AGENCY_ID_ID = get("AGENCY_ID_ID", "1711465765")
-AGENCY_ID_PH = get("AGENCY_ID_PH", "3635488650")
+# Payout agency names (used by the daily recap, which spans both markets).
+# The recap reads tevi_warehouse.rpt_agency_payout, which carries agency_name but
+# no agency_id (the id-bearing views need the revoked tevi_fiat.wd_tx grant).
+# IDs: LUINDO = 1711465765, PHP Payout = 3635488650.
+AGENCY_NAME_ID = get("AGENCY_NAME_ID", "LUINDO Payout Agency")
+AGENCY_NAME_PH = get("AGENCY_NAME_PH", "PHP Payout")
 
 # Inviter aliases attributed in the MCN daily report. These are Telegram user
 # ids that change when the CS/Indo account behind a lane is swapped, so they
