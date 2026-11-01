@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>mekoo-op payout worker</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 640px; margin: 24px auto; padding: 0 16px; }
+    label { display: block; margin: 12px 0 4px; font-weight: 600; }
+    input, select, textarea { width: 100%; box-sizing: border-box; padding: 6px; font: inherit; }
+    textarea { height: 90px; font-family: monospace; font-size: 12px; }
+    button { margin-top: 12px; padding: 6px 14px; }
+    pre { background: #f4f4f4; padding: 10px; white-space: pre-wrap; }
+    small { color: #666; }
+  </style>
+</head>
+<body>
+  <h2>mekoo-op payout worker</h2>
+
+  <label for="market">Agency of this Chrome profile</label>
+  <select id="market">
+    <option value="">— choose —</option>
+    <option value="id">ID — LUINDO (1711465765)</option>
+    <option value="ph">PH — PHP Payout (3635488650)</option>
+  </select>
+
+  <label for="bridgeUrl">mekoo-op bridge URL</label>
+  <input id="bridgeUrl" placeholder="http://127.0.0.1:8788">
+
+  <label for="token">Bridge token <small>(EXT_BRIDGE_TOKEN in mekoo-op .env)</small></label>
+  <input id="token" type="password">
+
+  <label for="pollSeconds">Poll every (seconds, min 30)</label>
+  <input id="pollSeconds" type="number" min="30" step="1">
+  <small>Polling only talks to mekoo-op on this machine; Tevi's API is called only when a job is queued.</small>
+
+  <div><button id="save">Save</button> <button id="pollNow">Poll now</button></div>
+
+  <h3>Log in with a token</h3>
+  <small>On a browser logged in as this agency, run in the DevTools console of business.tevi.com:
+    <code>copy(localStorage.getItem('user_token_identify'))</code> and paste here.</small>
+  <textarea id="seed"></textarea>
+  <button id="seedBtn">Log in</button>
+
+  <h3>Status</h3>
+  <pre id="status">—</pre>
+
+  <script src="options.js"></script>
+</body>
+</html>

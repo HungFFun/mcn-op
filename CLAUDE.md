@@ -194,6 +194,15 @@ error rather than aborting the batch.
   `account_name`/`phone_number`/`wallet_name` — which `payout/queries.py`
   coalesces into holder/account/bank. `payout_method_id`: 11 Bank / 16 E-Wallet
   (ID), 10 (PH). USD value is the view's `amount_usd` column.
+- **Extension source** (`--source extension`, or `PAYOUT_SOURCE=extension` for
+  scheduler/bot runs): Open/Fail come from the live agency API
+  (`wapi.flowstreamx.com/fiat/v1/agency/tx`), fetched by `chrome-extension/` in an
+  always-open Chrome (one profile per agency) — Cloudflare blocks every
+  non-browser client, and the warehouse grant on `tevi_fiat.wd_tx` is gone. The
+  extension polls `payout/ext_bridge.py` (HTTP thread in the bot, port 8788,
+  `X-Mekoo-Token`); jobs/results/heartbeats are files in `run/state/ext/`.
+  mekoo-op stays the only scheduler. `payout/api_rows.py` maps API rows to the
+  ClickHouse column shape. Skips the VAI pre-flight. Setup: `chrome-extension/README.md`.
 - **VAI leak check** is the one read of raw `tevi_fiat.wd_tx FINAL` (needs the
   un-backfilled `vai_tx_id`); still filter `_peerdb_is_deleted=0`.
 - Warehouse tasks query `tevi_warehouse.*` with **fully-qualified table names**,

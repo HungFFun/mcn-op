@@ -6,6 +6,12 @@ services:
     restart: unless-stopped
     environment:
       TZ: Asia/Ho_Chi_Minh
+      # Extension bridge (payout --source extension) must listen on all
+      # interfaces inside the container; the port is published on the host's
+      # loopback only, where the agency Chrome extension polls it.
+      EXT_BRIDGE_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8788:8788"
     volumes:
       # All config + secrets (ClickHouse + both Telegram bot tokens) live in
       # ./.env — self-sufficient and cross-platform (works on Windows too). The

@@ -99,6 +99,34 @@ TELEGRAM = {
 }
 
 
+# --- Live agency API via the Chrome extension (payout.run --source extension) --
+# See payout/ext_bridge.py and chrome-extension/README.md.
+STATE_DIR = Path(get("MEKOO_STATE_DIR", str(_PROJECT_ROOT / "run" / "state")))
+EXT = {
+    # Default for payout.run --source (scheduler/bot runs use this).
+    "source": get("PAYOUT_SOURCE", "clickhouse"),
+    # Bridge HTTP server the extension polls. In Docker bind 0.0.0.0 inside the
+    # container and publish only on the host's 127.0.0.1 (docker-compose.yml).
+    "host": get("EXT_BRIDGE_HOST", "127.0.0.1"),
+    "port": int(get("EXT_BRIDGE_PORT", "8788")),
+    # Shared secret the extension sends as X-Mekoo-Token (set it in its options).
+    "token": get("EXT_BRIDGE_TOKEN", ""),
+    "job_timeout": int(get("EXT_JOB_TIMEOUT", "300")),
+    # Request signing, handed to the extension with each job. Same value as
+    # SIGN_REQUEST_SECRET_DATA in tevi-business-web/.env.prod.
+    "api_domain": get("W_API_DOMAIN", "https://wapi.flowstreamx.com"),
+    "sign_secret": get("SIGN_REQUEST_SECRET_DATA", ""),
+}
+
+
+def require_extension() -> None:
+    missing = [k for k, v in (("EXT_BRIDGE_TOKEN", EXT["token"]),
+                              ("SIGN_REQUEST_SECRET_DATA", EXT["sign_secret"])) if not v]
+    if missing:
+        raise SystemExit("Missing extension settings: " + ", ".join(missing) +
+                         f" (set them in {_PROJECT_ROOT / '.env'}).")
+
+
 def require_clickhouse() -> None:
     missing = [k for k in ("host", "username", "database") if not CLICKHOUSE.get(k)]
     if not CLICKHOUSE.get("password"):

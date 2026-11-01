@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "mekoo-op payout worker",
+  "version": "1.0.0",
+  "description": "Fetches the agency's payout requests from business.tevi.com for mekoo-op when it queues a job.",
+  "permissions": ["alarms", "storage", "tabs", "scripting"],
+  "host_permissions": [
+    "https://business.tevi.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "action": { "default_title": "mekoo-op payout worker" }
+}

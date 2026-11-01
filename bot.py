@@ -23,6 +23,9 @@ import time
 
 import scheduler
 from common import env
+from payout import ext_bridge
+from payout import settings as payout_settings
+from payout.config import MARKETS
 
 try:
     import requests
@@ -130,7 +133,10 @@ def _fmt_status() -> str:
             alive = f"🟢 chạy ({int(age)}s trước)" if age < 90 else f"🟡 cũ ({int(age)}s)"
         except (OSError, ValueError):
             pass
-    lines = [f"🩺 <b>Scheduler:</b> {alive}", "", _fmt_schedule(), "", "🏃 <b>Lần chạy gần nhất</b>"]
+    lines = [f"🩺 <b>Scheduler:</b> {alive}"]
+    if payout_settings.EXT["source"] == "extension":
+        lines += [_fmt_extension(mk) for mk in MARKETS]
+    lines += ["", _fmt_schedule(), "", "🏃 <b>Lần chạy gần nhất</b>"]
     for k in RUNNABLE:
         f = scheduler.LOG_DIR / f"{k}.log"
         if f.exists():
@@ -139,6 +145,42 @@ def _fmt_status() -> str:
         else:
             lines.append(f"• {esc(_label(k))}: —")
     return "\n".join(lines)
+
+
+# --- payout extension (PAYOUT_SOURCE=extension) ------------------------------
+
+_EXT_STALE_S = 600   # no poll for 10 min → the agency Chrome is down
+
+
+def _fmt_extension(market: str) -> str:
+    hb = ext_bridge.heartbeat(market)
+    if not hb:
+        return f"🧩 <b>Extension {market.upper()}:</b> 🔴 chưa từng kết nối"
+    age = int(time.time() - hb["at"])
+    if age > _EXT_STALE_S:
+        return f"🧩 <b>Extension {market.upper()}:</b> 🔴 mất kết nối ({age // 60} phút)"
+    if not hb.get("logged_in"):
+        return f"🧩 <b>Extension {market.upper()}:</b> 🟡 chạy nhưng chưa đăng nhập"
+    if str(hb.get("uid")) != MARKETS[market]["agency_id"]:
+        return f"🧩 <b>Extension {market.upper()}:</b> 🟡 sai tài khoản (uid {esc(hb.get('uid'))})"
+    return f"🧩 <b>Extension {market.upper()}:</b> 🟢 {age}s trước"
+
+
+def _extension_watchdog() -> None:
+    """Ping the control chat(s) once when a market's extension goes silent or
+    logs out, and once more when it recovers."""
+    bad: dict[str, bool] = {}
+    while True:
+        for mk in MARKETS:
+            line = _fmt_extension(mk)
+            is_bad = "🟢" not in line
+            if is_bad != bad.get(mk, False):
+                bad[mk] = is_bad
+                text = (f"⚠️ {line}\nPayout {mk.upper()} sẽ lỗi cho tới khi Chrome/extension chạy lại."
+                        if is_bad else f"✅ {line}")
+                for chat_id in env.CONTROL_ALLOWED:
+                    send(chat_id, text)
+        time.sleep(60)
 
 
 # --- task execution ----------------------------------------------------------
@@ -321,6 +363,12 @@ def main() -> None:
         threading.Thread(target=scheduler.serve, kwargs={"runner": _on_schedule_fire},
                          daemon=True).start()
         print("Scheduler thread started.")
+
+    if payout_settings.EXT["source"] == "extension":
+        payout_settings.require_extension()
+        ext_bridge.serve_in_thread()
+        print(f"Extension bridge on {payout_settings.EXT['host']}:{payout_settings.EXT['port']}.")
+        threading.Thread(target=_extension_watchdog, daemon=True).start()
 
     poll()
 

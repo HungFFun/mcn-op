@@ -12,6 +12,7 @@ Usage
     python3 -m payout.run --market both --no-send # build PDFs only, skip Telegram
     python3 -m payout.run --market both --now "2026-07-14 08:00"
     python3 -m payout.run --market id --no-preflight
+    python3 -m payout.run --market id --source extension --no-send  # live API via Chrome extension
 
 Requires credentials in ~/.claude/secrets/clickhouse.env and
 ~/.claude/secrets/telegram_payout.env (see .env.example). Install deps first:
@@ -26,7 +27,10 @@ import os
 from datetime import datetime
 
 from .config import MARKETS
+from . import api_rows
 from . import ch_client
+from . import ext_bridge
+from . import settings
 from . import build as build_mod
 from . import telegram_client
 from . import reconcile
@@ -34,23 +38,33 @@ from . import vai_preflight
 
 
 def run_market(market: str, outdir: str, now: datetime, send: bool,
-               preflight: bool = True) -> dict:
+               preflight: bool = True, source: str = "clickhouse") -> dict:
     m = MARKETS[market]
 
-    # Step 0 — VAI credit pre-flight (advisory, never blocks).
+    # Step 0 — VAI credit pre-flight (advisory, never blocks). It needs the raw
+    # vai_tx_id in ClickHouse, so the extension source skips it.
     pf = None
-    if preflight:
+    if preflight and source == "clickhouse":
         leaks = ch_client.fetch_vai_leaks(m["agency_id"])
         pf = vai_preflight.preflight_check(leaks)
         print(f"[{market}] {pf['message']}")
+    elif preflight:
+        print(f"[{market}] VAI pre-flight skipped (source=extension, needs ClickHouse)")
 
-    raw = ch_client.fetch_open(m["agency_id"])
+    # Reconciliation cutoff comes from the prior PDF, not the data source.
+    cutoff, prior_pdf = reconcile.resolve_cutoff(market, outdir, now)
+    if source == "extension":
+        settings.require_extension()
+        open_items, fail_items = ext_bridge.request_data(market)
+        raw = api_rows.open_raw(open_items)
+        fail_raw = api_rows.fail_raw(fail_items, cutoff) if raw["rows"] else None
+    else:
+        raw = ch_client.fetch_open(m["agency_id"])
+        fail_raw = (ch_client.fetch_fail_credits(m["agency_id"], cutoff)
+                    if raw["rows"] else None)
     if not raw["rows"]:
         return {"market": market, "skipped": "no Open requests", "vai_preflight": pf}
 
-    # Reconciliation inputs: cutoff from the prior PDF, Fail credits, carryover.
-    cutoff, prior_pdf = reconcile.resolve_cutoff(market, outdir, now)
-    fail_raw = ch_client.fetch_fail_credits(m["agency_id"], cutoff)
     carryover = reconcile.load_carryover(m["batch_prefix"])
 
     summary = build_mod.run_data(
@@ -86,6 +100,10 @@ def main() -> None:
                     help="build the PDFs but do not post to Telegram")
     ap.add_argument("--no-preflight", dest="preflight", action="store_false",
                     help="skip the VAI credit pre-flight")
+    ap.add_argument("--source", default=settings.EXT["source"],
+                    choices=["clickhouse", "extension"],
+                    help="clickhouse (warehouse view) or extension (live agency API "
+                         "through the Chrome extension, see payout/ext_bridge.py)")
     args = ap.parse_args()
 
     now = datetime.strptime(args.now, "%Y-%m-%d %H:%M") if args.now else datetime.now()
@@ -94,7 +112,8 @@ def main() -> None:
     results = []
     for mk in markets:
         try:
-            results.append(run_market(mk, args.outdir, now, args.send, args.preflight))
+            results.append(run_market(mk, args.outdir, now, args.send, args.preflight,
+                                      args.source))
         except Exception as exc:  # noqa: BLE001 — report per market, keep going
             results.append({"market": mk, "error": f"{type(exc).__name__}: {exc}"})
 
